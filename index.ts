@@ -11,6 +11,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 
+const PROVIDER_ID = "llama-cpp";
 const DEFAULT_BASE_URL = "http://localhost:8080/v1";
 // Fallback for /v1/models entries missing meta.n_ctx.
 const DEFAULT_CONTEXT_WINDOW = 8192;
@@ -137,7 +138,7 @@ export default async function (pi: ExtensionAPI) {
 				return;
 			}
 
-			pi.registerProvider("llama-cpp", {
+			pi.registerProvider(PROVIDER_ID, {
 				name: "llama.cpp",
 				baseUrl,
 				apiKey,
@@ -184,7 +185,7 @@ export default async function (pi: ExtensionAPI) {
 			if (typeof nCtx === "number" && nCtx > 0) {
 				model.contextWindow = nCtx;
 				discoveredContext.add(modelId);
-				pi.registerProvider("llama-cpp", {
+				pi.registerProvider(PROVIDER_ID, {
 					name: "llama.cpp",
 					baseUrl,
 					apiKey,
@@ -213,13 +214,16 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	pi.on("model_select", (event, ctx) => {
-		if (event.model.provider !== "llama-cpp") {
+		if (event.model.provider !== PROVIDER_ID) {
 			return;
 		}
 		void discoverContextWindow(event.model.id, ctx);
 	});
 
 	pi.on("before_provider_request", (event, ctx) => {
+		if (ctx.model?.provider !== PROVIDER_ID) {
+			return;
+		}
 		const modelId = (event.payload as { model?: unknown })?.model;
 		if (typeof modelId === "string") {
 			void discoverContextWindow(modelId, ctx);
