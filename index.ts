@@ -149,13 +149,10 @@ export default async function (pi: ExtensionAPI) {
 		pendingContext.add(modelId);
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), PROPS_TIMEOUT_MS);
-		const propsBase = `${baseUrl.replace(/\/v1$/, "")}/props?model=${encodeURIComponent(modelId)}&autoload=`;
+		const propsUrl = `${baseUrl.replace(/\/v1$/, "")}/props?model=${encodeURIComponent(modelId)}&autoload=true`;
 
 		try {
-			let response = await fetch(`${propsBase}false`, { signal: controller.signal });
-			if (response.status === 400 || response.status === 404) {
-				response = await fetch(`${propsBase}true`, { signal: controller.signal });
-			}
+			const response = await fetch(propsUrl, { signal: controller.signal });
 			if (!response.ok) {
 				ctx.ui.notify(`[llama-cpp] /props for ${modelId} returned ${response.status}`, "error");
 				return;
