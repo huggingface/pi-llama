@@ -221,9 +221,6 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_provider_request", (event, ctx) => {
-		if (ctx.model?.provider !== PROVIDER_ID) {
-			return;
-		}
 		const modelId = (event.payload as { model?: unknown })?.model;
 		if (typeof modelId === "string") {
 			void discoverContextWindow(modelId, ctx);
