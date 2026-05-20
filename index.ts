@@ -16,9 +16,6 @@ const DEFAULT_BASE_URL = "http://localhost:8080/v1";
 // Fallback for /v1/models entries missing meta.n_ctx.
 const DEFAULT_CONTEXT_WINDOW = 8192;
 const PROPS_TIMEOUT_MS = 120_000;
-// Eager startup probe never autoloads; a short timeout bounds pi startup
-// latency even when the router has many cold or slow models.
-const PROPS_EAGER_TIMEOUT_MS = 5_000;
 
 const ModelsResponseSchema = Type.Object({
 	data: Type.Optional(
@@ -271,11 +268,6 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 	await refreshProvider();
-	// Probe already-loaded models before the first request can be built; /v1/models
-	// lacks chat_template, and autoload=false avoids loading cold router models.
-	await Promise.allSettled(
-		currentModels.map((m) => discoverModelMetadata(m.id, undefined, false, PROPS_EAGER_TIMEOUT_MS)),
-	);
 
 	pi.on("input", async (event) => {
 		const trimmed = event.text.trim().toLowerCase();
