@@ -215,11 +215,6 @@ export default async function (pi: ExtensionAPI) {
 
 		try {
 			const response = await fetch(propsUrl, { signal: controller.signal });
-			if (!autoload && (response.status === 400 || response.status === 404)) {
-				// Model isn't loaded and we asked the server not to load it.
-				// Skip silently; lazy discovery on model_select will pick it up.
-				return;
-			}
 			if (!response.ok) {
 				ctx?.ui.notify(`[llama-cpp] /props for ${modelId} returned ${response.status}`, "error");
 				return;
