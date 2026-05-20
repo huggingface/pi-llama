@@ -129,7 +129,6 @@ export default async function (pi: ExtensionAPI) {
 						model.meta?.n_ctx ??
 						previousById.get(model.id)?.contextWindow ??
 						DEFAULT_CONTEXT_WINDOW,
-					// maxTokens: -1,
 				} as LlamaModel;
 			});
 
