@@ -238,6 +238,9 @@ export default async function (pi: ExtensionAPI) {
 				applyTemplateThinkingSupport(model);
 				if (selectedModel) {
 					applyTemplateThinkingSupport(selectedModel);
+					if (pi.getThinkingLevel() === "off") {
+						pi.setThinkingLevel("medium");
+					}
 				}
 				updated = true;
 			}
@@ -278,6 +281,7 @@ export default async function (pi: ExtensionAPI) {
 		void discoverModelMetadata(event.model.id, ctx, true, PROPS_TIMEOUT_MS, event.model);
 	});
 
+	// Discover /props for already-active models because re-selecting them does not emit model_select.
 	pi.on("before_provider_request", (event, ctx) => {
 		const modelId = (event.payload as { model?: unknown })?.model;
 		if (typeof modelId === "string") {
