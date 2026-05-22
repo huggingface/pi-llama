@@ -116,11 +116,13 @@ export default async function (pi: ExtensionAPI) {
 	const baseUrl = (process.env.LLAMA_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
 	const apiKey = process.env.LLAMA_API_KEY ?? "no-key";
 
-	async function refreshProvider(): Promise<void> {
+	async function refreshProvider(ctx?: ExtensionCtx): Promise<void> {
 		try {
 			const response = await fetch(`${baseUrl}/models`);
 			if (!response.ok) {
-				console.warn(`[llama-cpp] ${baseUrl}/models returned ${response.status}`);
+				const msg = `${baseUrl}/models returned ${response.status}`;
+				console.warn(`[llama-cpp] ${msg}`);
+				ctx?.ui.notify(`[llama-cpp] ${msg}`, "error");
 				return;
 			}
 
@@ -129,7 +131,9 @@ export default async function (pi: ExtensionAPI) {
 				const errors = [...validateModelsResponse.Errors(payload)]
 					.map((e) => `${"path" in e ? e.path : ""} ${e.message}`)
 					.join("; ");
-				console.warn(`[llama-cpp] invalid /models response: ${errors}`);
+				const msg = `invalid /models response: ${errors}`;
+				console.warn(`[llama-cpp] ${msg}`);
+				ctx?.ui.notify(`[llama-cpp] ${msg}`, "error");
 				return;
 			}
 
@@ -164,7 +168,9 @@ export default async function (pi: ExtensionAPI) {
 			});
 
 			if (currentModels.length === 0) {
-				console.warn(`[llama-cpp] no models returned from ${baseUrl}/models`);
+				const msg = `no models returned from ${baseUrl}/models`;
+				console.warn(`[llama-cpp] ${msg}`);
+				ctx?.ui.notify(`[llama-cpp] ${msg}`, "error");
 				return;
 			}
 
@@ -176,7 +182,12 @@ export default async function (pi: ExtensionAPI) {
 				models: currentModels,
 			});
 		} catch (error) {
-			console.warn(`[llama-cpp] failed to reach ${baseUrl}/models: ${(error as Error).message}`);
+			const reason = (error as Error).message;
+			console.warn(`[llama-cpp] failed to reach ${baseUrl}/models: ${reason}`);
+			ctx?.ui.notify(
+				`[llama-cpp] llama-server not reachable at ${baseUrl} (${reason}). Start it with: llama-server -hf <repo>`,
+				"error",
+			);
 		}
 	}
 
@@ -267,10 +278,10 @@ export default async function (pi: ExtensionAPI) {
 
 	await refreshProvider();
 
-	pi.on("input", async (event) => {
+	pi.on("input", async (event, ctx) => {
 		const trimmed = event.text.trim().toLowerCase();
 		if (trimmed === "/model") {
-			await refreshProvider();
+			await refreshProvider(ctx);
 		}
 	});
 
