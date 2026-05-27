@@ -94,6 +94,13 @@ function applyTemplateThinkingSupport(model: MutableThinkingModel): void {
 	};
 }
 
+function formatContextWindow(tokens: number): string {
+	const kib = tokens / 1024;
+	return Number.isInteger(kib)
+		? `${kib >= 1024 ? `${kib / 1024}M` : `${kib}K`} tokens`
+		: `${tokens.toLocaleString("en-US")} tokens`;
+}
+
 export default async function (pi: ExtensionAPI) {
 	let currentModels: LlamaModel[] = [];
 
@@ -212,10 +219,17 @@ export default async function (pi: ExtensionAPI) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		const propsUrl = `${baseUrl.replace(/\/v1$/, "")}/props?model=${encodeURIComponent(modelId)}&autoload=${autoload}`;
+		const clearFooterStatusLater = () =>
+			setTimeout(() => ctx?.ui.setStatus(PROVIDER_ID, undefined), 8000);
 
 		try {
+			if (autoload && ctx) {
+				ctx.ui.setStatus(PROVIDER_ID, ctx.ui.theme.fg("dim", `[llama.cpp] loading: ${modelId}`));
+			}
+
 			const response = await fetch(propsUrl, { signal: controller.signal });
 			if (!response.ok) {
+				ctx?.ui.setStatus(PROVIDER_ID, undefined);
 				ctx?.ui.notify(`[llama-cpp] /props for ${modelId} returned ${response.status}`, "error");
 				return;
 			}
@@ -224,14 +238,16 @@ export default async function (pi: ExtensionAPI) {
 				const errors = [...validatePropsResponse.Errors(data)]
 					.map((e) => `${"path" in e ? e.path : ""} ${e.message}`)
 					.join("; ");
+				ctx?.ui.setStatus(PROVIDER_ID, undefined);
 				ctx?.ui.notify(`[llama-cpp] invalid /props response for ${modelId}: ${errors}`, "error");
 				return;
 			}
 			const nCtx = data.default_generation_settings?.n_ctx;
 			let updated = false;
+			let loadedFooterStatus = autoload ? `llama.cpp loaded: ${modelId}` : undefined;
 			if (typeof nCtx === "number" && nCtx > 0) {
 				model.contextWindow = nCtx;
-				ctx?.ui.notify(`[llama-cpp] contextWindow=${nCtx} for ${modelId}`, "info");
+				loadedFooterStatus = `[llama.cpp] ${modelId} (ctx ${formatContextWindow(nCtx)}) loaded`;
 				updated = true;
 			}
 			if (data.chat_template?.includes("enable_thinking") === true) {
@@ -245,6 +261,10 @@ export default async function (pi: ExtensionAPI) {
 				updated = true;
 			}
 			discoveredMetadata.add(modelId);
+			if (loadedFooterStatus && ctx) {
+				ctx.ui.setStatus(PROVIDER_ID, ctx.ui.theme.fg("dim", loadedFooterStatus));
+				clearFooterStatusLater();
+			}
 			if (!updated) {
 				return;
 			}
@@ -258,6 +278,7 @@ export default async function (pi: ExtensionAPI) {
 		} catch (error) {
 			const err = error as Error;
 			const msg = err.name === "AbortError" ? "timeout" : err.message;
+			ctx?.ui.setStatus(PROVIDER_ID, undefined);
 			ctx?.ui.notify(`[llama-cpp] /props for ${modelId} failed: ${msg}`, "error");
 		} finally {
 			clearTimeout(timer);
