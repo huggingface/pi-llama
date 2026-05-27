@@ -94,13 +94,6 @@ function applyTemplateThinkingSupport(model: MutableThinkingModel): void {
 	};
 }
 
-function formatContextWindow(tokens: number): string {
-	const kib = tokens / 1024;
-	return Number.isInteger(kib)
-		? `${kib >= 1024 ? `${kib / 1024}M` : `${kib}K`} tokens`
-		: `${tokens.toLocaleString("en-US")} tokens`;
-}
-
 export default async function (pi: ExtensionAPI) {
 	let currentModels: LlamaModel[] = [];
 
@@ -244,10 +237,10 @@ export default async function (pi: ExtensionAPI) {
 			}
 			const nCtx = data.default_generation_settings?.n_ctx;
 			let updated = false;
-			let loadedFooterStatus = autoload ? `llama.cpp loaded: ${modelId}` : undefined;
+			let loadedFooterStatus = autoload ? `[llama.cpp] loaded: ${modelId}` : undefined;
 			if (typeof nCtx === "number" && nCtx > 0) {
 				model.contextWindow = nCtx;
-				loadedFooterStatus = `[llama.cpp] ${modelId} (ctx ${formatContextWindow(nCtx)}) loaded`;
+				loadedFooterStatus = `[llama.cpp] loaded: ${modelId} ctx ${nCtx} tokens`;
 				updated = true;
 			}
 			if (data.chat_template?.includes("enable_thinking") === true) {
