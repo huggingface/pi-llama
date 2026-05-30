@@ -182,6 +182,7 @@ export default async function (pi: ExtensionAPI) {
 
 	const discoveredMetadata = new Set<string>();
 	const pendingMetadata = new Set<string>();
+	let statusTimeout: NodeJS.Timeout | null = null;
 
 	async function discoverModelMetadata(
 		modelId: string,
@@ -213,7 +214,7 @@ export default async function (pi: ExtensionAPI) {
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		const propsUrl = `${baseUrl.replace(/\/v1$/, "")}/props?model=${encodeURIComponent(modelId)}&autoload=${autoload}`;
 		const clearFooterStatusLater = () =>
-			setTimeout(() => ctx?.ui.setStatus(PROVIDER_ID, undefined), 8000);
+			statusTimeout = setTimeout(() => ctx?.ui.setStatus(PROVIDER_ID, undefined), 8000);
 
 		try {
 			if (autoload && ctx) {
@@ -303,5 +304,8 @@ export default async function (pi: ExtensionAPI) {
 				ctx.model?.provider === PROVIDER_ID && ctx.model.id === modelId ? ctx.model : undefined;
 			void discoverModelMetadata(modelId, ctx, true, PROPS_TIMEOUT_MS, activeModel);
 		}
+	});
+	pi.on("session_shutdown", async (event, ctx) => {
+		clearTimeout(statusTimeout);
 	});
 }
