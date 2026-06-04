@@ -60,6 +60,7 @@ const PropsResponseSchema = Type.Object({
 		}),
 	),
 	chat_template: Type.Optional(Type.String()),
+	build_info: Type.Optional(Type.String()),
 });
 
 const validatePropsResponse = Compile(PropsResponseSchema);
@@ -98,18 +99,30 @@ export default async function (pi: ExtensionAPI) {
 	let currentModels: LlamaModel[] = [];
 
 	pi.registerCommand("llama-version", {
-		description: "Print llama-server --version output",
+		description: "Get build info of llama.cpp server",
 		handler: async (_args, ctx) => {
-			const result = await pi.exec("llama-server", ["--version"]);
-			const output = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
-			const versionLine = output
-				.split("\n")
-				.map((l) => l.trim())
-				.find((l) => /^version:\s/i.test(l));
-			ctx.ui.notify(
-				versionLine ?? `llama-server exited with code ${result.code}`,
-				versionLine ? "info" : "error",
-			);
+			const response = await fetch(`${baseUrl.replace(/\/v1$/, "")}/props`);
+			if (!response.ok) {
+				ctx.ui.notify(`[llama-cpp] /props returned ${response.status}`, "error");
+				return;
+			}
+
+			const data: unknown = await response.json();
+			if (!validatePropsResponse.Check(data)) {
+				const errors = [...validatePropsResponse.Errors(data)]
+					.map((e) => `${"path" in e ? e.path : ""} ${e.message}`)
+					.join("; ");
+				ctx.ui.notify(`[llama-cpp] invalid /props response: ${errors}`, "error");
+				return;
+			}
+
+			const match = data.build_info?.match(/^b([a-zA-Z0-9]+)-([a-zA-Z0-9]+)$/);
+
+			if (match && match.length === 3) {
+				ctx.ui.notify(`Build number: ${match[1]}, Commit hash: ${match[2]}`, "info");
+			} else {
+				ctx.ui.notify(`Malformed build info: ${data.build_info}`, "warning");
+			}
 		},
 	});
 

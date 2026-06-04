@@ -32,6 +32,13 @@ pi -e ~/code/pi-llama/index.ts
 `-e` loads the extension only for the current session, useful while
 developing.
 
+## Environment Variables
+
+This extension supports the following environment variables:
+
+- LLAMA_BASE_URL (Default: `http://localhost:8080/v1`)
+- LLAMA_API_KEY (Default: `no-key`)
+
 ## Usage
 
 ```bash
@@ -40,6 +47,9 @@ curl -LsSf https://llama.app/install.sh | bash
 
 # 2. Start the server
 llama serve
+
+# Optional: Use a remote instance of llama.cpp server instead of local
+export LLAMA_BASE_URL="https://llama.example.com/v1"
 
 # 3. Launch pi in another terminal
 pi
