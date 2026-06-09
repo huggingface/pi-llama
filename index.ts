@@ -79,6 +79,7 @@ const TEMPLATE_THINKING_LEVEL_MAP = {
 // Minimal shape needed to update both registered models and Pi's active model snapshot.
 type MutableThinkingModel = {
 	reasoning: boolean;
+	maxTokens?: number;
 	thinkingLevelMap?: LlamaModel["thinkingLevelMap"];
 	compat?: LlamaModel["compat"];
 };
@@ -172,6 +173,7 @@ export default async function (pi: ExtensionAPI) {
 					input,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					contextWindow: model.meta?.n_ctx ?? previous?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+					maxTokens: model.meta?.n_ctx ?? previous?.maxTokens ?? DEFAULT_CONTEXT_WINDOW,
 					compat: previous?.compat,
 				} as LlamaModel;
 			});
@@ -253,6 +255,7 @@ export default async function (pi: ExtensionAPI) {
 			let loadedFooterStatus = autoload ? `[llama.cpp] ${modelId} loaded` : undefined;
 			if (typeof nCtx === "number" && nCtx > 0) {
 				model.contextWindow = nCtx;
+				model.maxTokens = nCtx;
 				loadedFooterStatus = `[llama.cpp] ${modelId} loaded with ctx ${nCtx} tokens`;
 				updated = true;
 			}
