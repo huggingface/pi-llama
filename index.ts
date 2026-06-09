@@ -228,7 +228,13 @@ export default async function (pi: ExtensionAPI) {
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		const propsUrl = `${baseUrl.replace(/\/v1$/, "")}/props?model=${encodeURIComponent(modelId)}&autoload=${autoload}`;
 		const clearFooterStatusLater = () =>
-			setTimeout(() => ctx?.ui.setStatus(PROVIDER_ID, undefined), 8000);
+			setTimeout(() => {
+				try {
+					ctx?.ui.setStatus(PROVIDER_ID, undefined);
+				} catch {
+					// Print mode can retire the extension context before this timer fires.
+				}
+			}, 8000);
 
 		try {
 			if (autoload && ctx) {
