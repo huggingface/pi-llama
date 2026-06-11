@@ -15,6 +15,10 @@ const PROVIDER_ID = "llama-cpp";
 const DEFAULT_BASE_URL = "http://localhost:8080/v1";
 // Fallback for /v1/models entries missing meta.n_ctx.
 const DEFAULT_CONTEXT_WINDOW = 8192;
+// llama.cpp has no output-token cap (no endpoint reports one; generation is only
+// bounded by the context window), so use Pi's own default for models that omit
+// maxTokens (see model-registry.ts parseModels).
+const DEFAULT_MAX_TOKENS = 16384;
 const PROPS_TIMEOUT_MS = 120_000;
 
 const ModelsResponseSchema = Type.Object({
@@ -76,14 +80,16 @@ const TEMPLATE_THINKING_LEVEL_MAP = {
 } satisfies NonNullable<LlamaModel["thinkingLevelMap"]>;
 
 // Minimal shape needed to update both registered models and Pi's active model snapshot.
-type MutableThinkingModel = {
+type MutableModelMetadata = {
 	reasoning: boolean;
 	thinkingLevelMap?: LlamaModel["thinkingLevelMap"];
 	compat?: LlamaModel["compat"];
+	contextWindow: number;
+	maxTokens: number;
 };
 
 // Mark a model as using llama.cpp's chat_template_kwargs.enable_thinking control.
-function applyTemplateThinkingSupport(model: MutableThinkingModel): void {
+function applyTemplateThinkingSupport(model: MutableModelMetadata): void {
 	model.reasoning = true;
 	model.thinkingLevelMap = TEMPLATE_THINKING_LEVEL_MAP;
 	model.compat = {
@@ -149,6 +155,8 @@ export default async function (pi: ExtensionAPI) {
 				if (isLoaded) {
 					suffixes.push("(loaded)");
 				}
+				const contextWindow =
+					model.meta?.n_ctx ?? previous?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
 				return {
 					id: model.id,
 					name: suffixes.length > 0 ? `${model.id} ${suffixes.join(" ")}` : model.id,
@@ -158,7 +166,8 @@ export default async function (pi: ExtensionAPI) {
 					thinkingLevelMap: previous?.thinkingLevelMap,
 					input,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					contextWindow: model.meta?.n_ctx ?? previous?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+					contextWindow,
+					maxTokens: Math.min(DEFAULT_MAX_TOKENS, contextWindow),
 					compat: previous?.compat,
 				} as LlamaModel;
 			});
@@ -188,7 +197,7 @@ export default async function (pi: ExtensionAPI) {
 		ctx?: ExtensionCtx,
 		autoload = true,
 		timeoutMs = PROPS_TIMEOUT_MS,
-		selectedModel?: MutableThinkingModel,
+		selectedModel?: MutableModelMetadata,
 	): Promise<void> {
 		const model = currentModels.find((m) => m.id === modelId);
 		if (!model) {
@@ -196,11 +205,15 @@ export default async function (pi: ExtensionAPI) {
 		}
 		if (discoveredMetadata.has(modelId)) {
 			// Provider re-registration does not update Pi's active model snapshot, so copy
-			// already-discovered thinking metadata into the selected model when available.
-			if (selectedModel && model.reasoning) {
-				selectedModel.reasoning = model.reasoning;
-				selectedModel.thinkingLevelMap = model.thinkingLevelMap;
-				selectedModel.compat = model.compat;
+			// already-discovered metadata into the selected model when available.
+			if (selectedModel) {
+				selectedModel.contextWindow = model.contextWindow;
+				selectedModel.maxTokens = model.maxTokens;
+				if (model.reasoning) {
+					selectedModel.reasoning = model.reasoning;
+					selectedModel.thinkingLevelMap = model.thinkingLevelMap;
+					selectedModel.compat = model.compat;
+				}
 			}
 			return;
 		}
@@ -231,8 +244,13 @@ export default async function (pi: ExtensionAPI) {
 			let updated = false;
 			if (typeof nCtx === "number" && nCtx > 0) {
 				model.contextWindow = nCtx;
+				model.maxTokens = Math.min(DEFAULT_MAX_TOKENS, nCtx);
 				ctx?.ui.notify(`[llama-cpp] contextWindow=${nCtx} for ${modelId}`, "info");
 				updated = true;
+			}
+			if (selectedModel) {
+				selectedModel.contextWindow = model.contextWindow;
+				selectedModel.maxTokens = model.maxTokens;
 			}
 			if (data.chat_template?.includes("enable_thinking") === true) {
 				applyTemplateThinkingSupport(model);
