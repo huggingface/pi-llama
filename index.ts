@@ -83,6 +83,11 @@ const PropsResponseSchema = Type.Object({
 const validatePropsResponse = Compile(PropsResponseSchema);
 
 type LlamaModel = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]["models"]>[number];
+type DiscoveredCapabilities = {
+	multimodal?: boolean;
+	audio?: boolean;
+	video?: boolean;
+};
 type ExtensionCtx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
 // llama.cpp template thinking is boolean, so expose Pi's default off/medium toggle only.
@@ -123,16 +128,18 @@ function buildModelName(
 	id: string,
 	input: LlamaModel["input"],
 	isLoaded: boolean,
-	modalities?: { audio?: boolean; video?: boolean },
+	capabilities?: DiscoveredCapabilities,
 ): string {
 	const suffixes: string[] = [];
 	if (input.includes("image")) {
 		suffixes.push("image");
+	} else if (capabilities?.multimodal) {
+		suffixes.push("multimodal");
 	}
-	if (modalities?.audio) {
+	if (capabilities?.audio) {
 		suffixes.push("audio");
 	}
-	if (modalities?.video) {
+	if (capabilities?.video) {
 		suffixes.push("video");
 	}
 	if (isLoaded) {
@@ -143,7 +150,6 @@ function buildModelName(
 
 function getModelInputFromListing(model: {
 	architecture?: { input_modalities?: string[] };
-	capabilities?: string[];
 }): LlamaModel["input"] {
 	const input: LlamaModel["input"] = ["text"];
 	for (const modality of model.architecture?.input_modalities ?? []) {
@@ -151,28 +157,42 @@ function getModelInputFromListing(model: {
 			input.push(modality);
 		}
 	}
-	if (model.capabilities?.includes("multimodal")) {
-		input.push("image");
-	}
 	return dedupeInputs(input);
+}
+
+function getDiscoveredCapabilitiesFromListing(model: {
+	capabilities?: string[];
+}): DiscoveredCapabilities {
+	return {
+		multimodal: model.capabilities?.includes("multimodal") === true || undefined,
+	};
 }
 
 function applyPropsModalities(
 	model: MutableDiscoveredModel,
 	isLoaded: boolean,
+	capabilities: DiscoveredCapabilities,
 	modalities?: { vision?: boolean; audio?: boolean; video?: boolean },
-): boolean {
+): { updated: boolean; capabilities: DiscoveredCapabilities } {
 	let updated = false;
 	if (modalities?.vision && !model.input.includes("image")) {
 		model.input = dedupeInputs([...model.input, "image"]);
 		updated = true;
 	}
-	const nextName = buildModelName(model.id, model.input, isLoaded, modalities);
+	const nextCapabilities: DiscoveredCapabilities = {
+		...capabilities,
+		audio: modalities?.audio || capabilities.audio || undefined,
+		video: modalities?.video || capabilities.video || undefined,
+	};
+	if (capabilities.audio !== nextCapabilities.audio || capabilities.video !== nextCapabilities.video) {
+		updated = true;
+	}
+	const nextName = buildModelName(model.id, model.input, isLoaded, nextCapabilities);
 	if (model.name !== nextName) {
 		model.name = nextName;
 		updated = true;
 	}
-	return updated;
+	return { updated, capabilities: nextCapabilities };
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -241,13 +261,16 @@ export default async function (pi: ExtensionAPI) {
 			currentModels = (payload.data ?? []).map((model) => {
 				const previous = previousById.get(model.id);
 				const isLoaded = model.status?.value === "loaded";
-				const input = getModelInputFromListing({
-					...model,
-					capabilities: model.capabilities ?? listingCapabilitiesById.get(model.id),
-				});
+				const input = getModelInputFromListing(model);
+				const discoveredCapabilities =
+					discoveredCapabilitiesById.get(model.id) ??
+					getDiscoveredCapabilitiesFromListing({
+						capabilities: model.capabilities ?? listingCapabilitiesById.get(model.id),
+					});
+				discoveredCapabilitiesById.set(model.id, discoveredCapabilities);
 				return {
 					id: model.id,
-					name: buildModelName(model.id, input, isLoaded),
+					name: buildModelName(model.id, input, isLoaded, discoveredCapabilities),
 					// /v1/models does not include /props-discovered capabilities, so preserve
 					// template thinking metadata across refreshes.
 					reasoning: previous?.reasoning ?? false,
@@ -277,6 +300,7 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 	const discoveredMetadata = new Set<string>();
+	const discoveredCapabilitiesById = new Map<string, DiscoveredCapabilities>();
 	const pendingMetadata = new Set<string>();
 	let statusTimeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -349,14 +373,19 @@ export default async function (pi: ExtensionAPI) {
 			const nCtx = data.default_generation_settings?.n_ctx;
 			let updated = false;
 			const isLoaded = model.name.includes("loaded");
-			updated = applyPropsModalities(model, isLoaded, data.modalities) || updated;
+			const currentCapabilities = discoveredCapabilitiesById.get(modelId) ?? {};
+			const modelUpdate = applyPropsModalities(model, isLoaded, currentCapabilities, data.modalities);
+			discoveredCapabilitiesById.set(modelId, modelUpdate.capabilities);
+			updated = modelUpdate.updated || updated;
 			if (selectedModel) {
-				updated = applyPropsModalities(selectedModel, isLoaded, data.modalities) || updated;
+				updated =
+					applyPropsModalities(selectedModel, isLoaded, modelUpdate.capabilities, data.modalities).updated ||
+					updated;
 			}
 			let loadedFooterStatus = autoload ? `[llama.cpp] ${modelId} loaded` : undefined;
 			if (typeof nCtx === "number" && nCtx > 0) {
 				model.contextWindow = nCtx;
-				model.name = buildModelName(model.id, model.input, true, data.modalities);
+				model.name = buildModelName(model.id, model.input, true, discoveredCapabilitiesById.get(model.id));
 				if (selectedModel) {
 					selectedModel.name = model.name;
 				}
