@@ -18,6 +18,15 @@ const DEFAULT_CONTEXT_WINDOW = 8192;
 const PROPS_TIMEOUT_MS = 120_000;
 
 const ModelsResponseSchema = Type.Object({
+	models: Type.Optional(
+		Type.Array(
+			Type.Object({
+				name: Type.Optional(Type.String()),
+				model: Type.Optional(Type.String()),
+				capabilities: Type.Optional(Type.Array(Type.String())),
+			}),
+		),
+	),
 	data: Type.Optional(
 		Type.Array(
 			Type.Object({
@@ -40,6 +49,7 @@ const ModelsResponseSchema = Type.Object({
 						input_modalities: Type.Optional(Type.Array(Type.String())),
 					}),
 				),
+				capabilities: Type.Optional(Type.Array(Type.String())),
 				meta: Type.Optional(
 					Type.Object({
 						n_ctx: Type.Optional(Type.Number()),
@@ -61,11 +71,23 @@ const PropsResponseSchema = Type.Object({
 	),
 	chat_template: Type.Optional(Type.String()),
 	build_info: Type.Optional(Type.String()),
+	modalities: Type.Optional(
+		Type.Object({
+			vision: Type.Optional(Type.Boolean()),
+			video: Type.Optional(Type.Boolean()),
+			audio: Type.Optional(Type.Boolean()),
+		}),
+	),
 });
 
 const validatePropsResponse = Compile(PropsResponseSchema);
 
 type LlamaModel = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]["models"]>[number];
+type DiscoveredCapabilities = {
+	multimodal?: boolean;
+	audio?: boolean;
+	video?: boolean;
+};
 type ExtensionCtx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
 // llama.cpp template thinking is boolean, so expose Pi's default off/medium toggle only.
@@ -77,14 +99,17 @@ const TEMPLATE_THINKING_LEVEL_MAP = {
 } satisfies NonNullable<LlamaModel["thinkingLevelMap"]>;
 
 // Minimal shape needed to update both registered models and Pi's active model snapshot.
-type MutableThinkingModel = {
+type MutableDiscoveredModel = {
+	id: string;
+	name: string;
+	input: LlamaModel["input"];
 	reasoning: boolean;
 	thinkingLevelMap?: LlamaModel["thinkingLevelMap"];
 	compat?: LlamaModel["compat"];
 };
 
 // Mark a model as using llama.cpp's chat_template_kwargs.enable_thinking control.
-function applyTemplateThinkingSupport(model: MutableThinkingModel): void {
+function applyTemplateThinkingSupport(model: MutableDiscoveredModel): void {
 	model.reasoning = true;
 	model.thinkingLevelMap = TEMPLATE_THINKING_LEVEL_MAP;
 	model.compat = {
@@ -93,6 +118,81 @@ function applyTemplateThinkingSupport(model: MutableThinkingModel): void {
 		// chat_template_kwargs.enable_thinking payload, not a Qwen-only option.
 		thinkingFormat: "qwen-chat-template",
 	};
+}
+
+function dedupeInputs(input: LlamaModel["input"]): LlamaModel["input"] {
+	return [...new Set(input)] as LlamaModel["input"];
+}
+
+function buildModelName(
+	id: string,
+	input: LlamaModel["input"],
+	isLoaded: boolean,
+	capabilities?: DiscoveredCapabilities,
+): string {
+	const suffixes: string[] = [];
+	if (input.includes("image")) {
+		suffixes.push("image");
+	} else if (capabilities?.multimodal) {
+		suffixes.push("multimodal");
+	}
+	if (capabilities?.audio) {
+		suffixes.push("audio");
+	}
+	if (capabilities?.video) {
+		suffixes.push("video");
+	}
+	if (isLoaded) {
+		suffixes.push("loaded");
+	}
+	return suffixes.length > 0 ? `${id} (${suffixes.join(", ")})` : id;
+}
+
+function getModelInputFromListing(model: {
+	architecture?: { input_modalities?: string[] };
+}): LlamaModel["input"] {
+	const input: LlamaModel["input"] = ["text"];
+	for (const modality of model.architecture?.input_modalities ?? []) {
+		if (modality === "text" || modality === "image") {
+			input.push(modality);
+		}
+	}
+	return dedupeInputs(input);
+}
+
+function getDiscoveredCapabilitiesFromListing(model: {
+	capabilities?: string[];
+}): DiscoveredCapabilities {
+	return {
+		multimodal: model.capabilities?.includes("multimodal") === true || undefined,
+	};
+}
+
+function applyPropsModalities(
+	model: MutableDiscoveredModel,
+	isLoaded: boolean,
+	capabilities: DiscoveredCapabilities,
+	modalities?: { vision?: boolean; audio?: boolean; video?: boolean },
+): { updated: boolean; capabilities: DiscoveredCapabilities } {
+	let updated = false;
+	if (modalities?.vision && !model.input.includes("image")) {
+		model.input = dedupeInputs([...model.input, "image"]);
+		updated = true;
+	}
+	const nextCapabilities: DiscoveredCapabilities = {
+		...capabilities,
+		audio: modalities?.audio || capabilities.audio || undefined,
+		video: modalities?.video || capabilities.video || undefined,
+	};
+	if (capabilities.audio !== nextCapabilities.audio || capabilities.video !== nextCapabilities.video) {
+		updated = true;
+	}
+	const nextName = buildModelName(model.id, model.input, isLoaded, nextCapabilities);
+	if (model.name !== nextName) {
+		model.name = nextName;
+		updated = true;
+	}
+	return { updated, capabilities: nextCapabilities };
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -147,24 +247,30 @@ export default async function (pi: ExtensionAPI) {
 			}
 
 			const previousById = new Map(currentModels.map((m) => [m.id, m]));
+			const listingCapabilitiesById = new Map<string, string[]>();
+			for (const listedModel of payload.models ?? []) {
+				const capabilities = listedModel.capabilities ?? [];
+				if (listedModel.model) {
+					listingCapabilitiesById.set(listedModel.model, capabilities);
+				}
+				if (listedModel.name) {
+					listingCapabilitiesById.set(listedModel.name, capabilities);
+				}
+			}
 
 			currentModels = (payload.data ?? []).map((model) => {
 				const previous = previousById.get(model.id);
 				const isLoaded = model.status?.value === "loaded";
-				const modalities = model.architecture?.input_modalities ?? ["text"];
-				const input = modalities.filter(
-					(m): m is "text" | "image" => m === "text" || m === "image",
-				);
-				const suffixes: string[] = [];
-				if (input.includes("image")) {
-					suffixes.push("(image)");
-				}
-				if (isLoaded) {
-					suffixes.push("(loaded)");
-				}
+				const input = getModelInputFromListing(model);
+				const discoveredCapabilities =
+					discoveredCapabilitiesById.get(model.id) ??
+					getDiscoveredCapabilitiesFromListing({
+						capabilities: model.capabilities ?? listingCapabilitiesById.get(model.id),
+					});
+				discoveredCapabilitiesById.set(model.id, discoveredCapabilities);
 				return {
 					id: model.id,
-					name: suffixes.length > 0 ? `${model.id} ${suffixes.join(" ")}` : model.id,
+					name: buildModelName(model.id, input, isLoaded, discoveredCapabilities),
 					// /v1/models does not include /props-discovered capabilities, so preserve
 					// template thinking metadata across refreshes.
 					reasoning: previous?.reasoning ?? false,
@@ -194,6 +300,7 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 	const discoveredMetadata = new Set<string>();
+	const discoveredCapabilitiesById = new Map<string, DiscoveredCapabilities>();
 	const pendingMetadata = new Set<string>();
 	let statusTimeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -209,7 +316,7 @@ export default async function (pi: ExtensionAPI) {
 		ctx?: ExtensionCtx,
 		autoload = true,
 		timeoutMs = PROPS_TIMEOUT_MS,
-		selectedModel?: MutableThinkingModel,
+		selectedModel?: MutableDiscoveredModel,
 	): Promise<void> {
 		const model = currentModels.find((m) => m.id === modelId);
 		if (!model) {
@@ -217,8 +324,10 @@ export default async function (pi: ExtensionAPI) {
 		}
 		if (discoveredMetadata.has(modelId)) {
 			// Provider re-registration does not update Pi's active model snapshot, so copy
-			// already-discovered thinking metadata into the selected model when available.
-			if (selectedModel && model.reasoning) {
+			// already-discovered metadata into the selected model when available.
+			if (selectedModel) {
+				selectedModel.name = model.name;
+				selectedModel.input = model.input;
 				selectedModel.reasoning = model.reasoning;
 				selectedModel.thinkingLevelMap = model.thinkingLevelMap;
 				selectedModel.compat = model.compat;
@@ -263,9 +372,23 @@ export default async function (pi: ExtensionAPI) {
 			}
 			const nCtx = data.default_generation_settings?.n_ctx;
 			let updated = false;
+			const isLoaded = model.name.includes("loaded");
+			const currentCapabilities = discoveredCapabilitiesById.get(modelId) ?? {};
+			const modelUpdate = applyPropsModalities(model, isLoaded, currentCapabilities, data.modalities);
+			discoveredCapabilitiesById.set(modelId, modelUpdate.capabilities);
+			updated = modelUpdate.updated || updated;
+			if (selectedModel) {
+				updated =
+					applyPropsModalities(selectedModel, isLoaded, modelUpdate.capabilities, data.modalities).updated ||
+					updated;
+			}
 			let loadedFooterStatus = autoload ? `[llama.cpp] ${modelId} loaded` : undefined;
 			if (typeof nCtx === "number" && nCtx > 0) {
 				model.contextWindow = nCtx;
+				model.name = buildModelName(model.id, model.input, true, discoveredCapabilitiesById.get(model.id));
+				if (selectedModel) {
+					selectedModel.name = model.name;
+				}
 				loadedFooterStatus = `[llama.cpp] ${modelId} loaded with ctx ${nCtx} tokens`;
 				updated = true;
 			}
