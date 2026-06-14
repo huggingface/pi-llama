@@ -64,6 +64,7 @@ const PropsResponseSchema = Type.Object({
 		}),
 	),
 	chat_template: Type.Optional(Type.String()),
+	build_info: Type.Optional(Type.String()),
 });
 
 const validatePropsResponse = Compile(PropsResponseSchema);
@@ -104,18 +105,30 @@ export default async function (pi: ExtensionAPI) {
 	let currentModels: LlamaModel[] = [];
 
 	pi.registerCommand("llama-version", {
-		description: "Print llama-server --version output",
+		description: "Get build info of llama.cpp server",
 		handler: async (_args, ctx) => {
-			const result = await pi.exec("llama-server", ["--version"]);
-			const output = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
-			const versionLine = output
-				.split("\n")
-				.map((l) => l.trim())
-				.find((l) => /^version:\s/i.test(l));
-			ctx.ui.notify(
-				versionLine ?? `llama-server exited with code ${result.code}`,
-				versionLine ? "info" : "error",
-			);
+			const response = await fetch(`${baseUrl.replace(/\/v1$/, "")}/props`);
+			if (!response.ok) {
+				ctx.ui.notify(`[llama-cpp] /props returned ${response.status}`, "error");
+				return;
+			}
+
+			const data: unknown = await response.json();
+			if (!validatePropsResponse.Check(data)) {
+				const errors = [...validatePropsResponse.Errors(data)]
+					.map((e) => `${"path" in e ? e.path : ""} ${e.message}`)
+					.join("; ");
+				ctx.ui.notify(`[llama-cpp] invalid /props response: ${errors}`, "error");
+				return;
+			}
+
+			const match = data.build_info?.match(/^b([a-zA-Z0-9]+)-([a-zA-Z0-9]+)$/);
+
+			if (match && match.length === 3) {
+				ctx.ui.notify(`Build number: ${match[1]}, Commit hash: ${match[2]}`, "info");
+			} else {
+				ctx.ui.notify(`Malformed build info: ${data.build_info}`, "warning");
+			}
 		},
 	});
 
@@ -191,6 +204,14 @@ export default async function (pi: ExtensionAPI) {
 
 	const discoveredMetadata = new Set<string>();
 	const pendingMetadata = new Set<string>();
+	let statusTimeout: ReturnType<typeof setTimeout> | undefined;
+
+	function clearFooterStatusTimeout(): void {
+		if (statusTimeout !== undefined) {
+			clearTimeout(statusTimeout);
+			statusTimeout = undefined;
+		}
+	}
 
 	async function discoverModelMetadata(
 		modelId: string,
@@ -225,10 +246,22 @@ export default async function (pi: ExtensionAPI) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		const propsUrl = `${baseUrl.replace(/\/v1$/, "")}/props?model=${encodeURIComponent(modelId)}&autoload=${autoload}`;
+		const clearFooterStatusLater = () => {
+			clearFooterStatusTimeout();
+			statusTimeout = setTimeout(() => {
+				statusTimeout = undefined;
+				ctx?.ui.setStatus(PROVIDER_ID, undefined);
+			}, 8000);
+		};
 
 		try {
+			if (autoload && ctx) {
+				ctx.ui.setStatus(PROVIDER_ID, ctx.ui.theme.fg("dim", `[llama.cpp] loading: ${modelId}`));
+			}
+
 			const response = await fetch(propsUrl, { signal: controller.signal });
 			if (!response.ok) {
+				ctx?.ui.setStatus(PROVIDER_ID, undefined);
 				ctx?.ui.notify(`[llama-cpp] /props for ${modelId} returned ${response.status}`, "error");
 				return;
 			}
@@ -237,15 +270,17 @@ export default async function (pi: ExtensionAPI) {
 				const errors = [...validatePropsResponse.Errors(data)]
 					.map((e) => `${"path" in e ? e.path : ""} ${e.message}`)
 					.join("; ");
+				ctx?.ui.setStatus(PROVIDER_ID, undefined);
 				ctx?.ui.notify(`[llama-cpp] invalid /props response for ${modelId}: ${errors}`, "error");
 				return;
 			}
 			const nCtx = data.default_generation_settings?.n_ctx;
 			let updated = false;
+			let loadedFooterStatus = autoload ? `[llama.cpp] ${modelId} loaded` : undefined;
 			if (typeof nCtx === "number" && nCtx > 0) {
 				model.contextWindow = nCtx;
 				model.maxTokens = Math.min(DEFAULT_MAX_TOKENS, nCtx);
-				ctx?.ui.notify(`[llama-cpp] contextWindow=${nCtx} for ${modelId}`, "info");
+				loadedFooterStatus = `[llama.cpp] ${modelId} loaded with ctx ${nCtx} tokens`;
 				updated = true;
 			}
 			if (selectedModel) {
@@ -263,6 +298,10 @@ export default async function (pi: ExtensionAPI) {
 				updated = true;
 			}
 			discoveredMetadata.add(modelId);
+			if (loadedFooterStatus && ctx) {
+				ctx.ui.setStatus(PROVIDER_ID, ctx.ui.theme.fg("dim", loadedFooterStatus));
+				clearFooterStatusLater();
+			}
 			if (!updated) {
 				return;
 			}
@@ -276,6 +315,7 @@ export default async function (pi: ExtensionAPI) {
 		} catch (error) {
 			const err = error as Error;
 			const msg = err.name === "AbortError" ? "timeout" : err.message;
+			ctx?.ui.setStatus(PROVIDER_ID, undefined);
 			ctx?.ui.notify(`[llama-cpp] /props for ${modelId} failed: ${msg}`, "error");
 		} finally {
 			clearTimeout(timer);
@@ -307,5 +347,9 @@ export default async function (pi: ExtensionAPI) {
 				ctx.model?.provider === PROVIDER_ID && ctx.model.id === modelId ? ctx.model : undefined;
 			void discoverModelMetadata(modelId, ctx, true, PROPS_TIMEOUT_MS, activeModel);
 		}
+	});
+
+	pi.on("session_shutdown", () => {
+		clearFooterStatusTimeout();
 	});
 }
