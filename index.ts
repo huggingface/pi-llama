@@ -8,8 +8,16 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
+
+type LlamaConfig = {
+	baseUrl?: string;
+	apiKey?: string;
+};
 
 const PROVIDER_ID = "llama-cpp";
 const DEFAULT_BASE_URL = "http://localhost:8080/v1";
@@ -20,6 +28,42 @@ const DEFAULT_CONTEXT_WINDOW = 8192;
 // maxTokens (see model-registry.ts parseModels).
 const DEFAULT_MAX_TOKENS = 16384;
 const PROPS_TIMEOUT_MS = 120_000;
+
+function getConfigPaths(cwd: string): { globalPath: string; projectPath: string } {
+	return {
+		globalPath: join(getAgentDir(), "pi-llama.json"),
+		projectPath: join(cwd, ".pi", "pi-llama.json"),
+	};
+}
+
+// Precedence: env vars > project config > global config > defaults.
+function loadConfig(cwd: string): LlamaConfig {
+	const { globalPath, projectPath } = getConfigPaths(cwd);
+
+	let config: LlamaConfig = {};
+
+	if (existsSync(globalPath)) {
+		try {
+			config = { ...config, ...JSON.parse(readFileSync(globalPath, "utf-8")) };
+		} catch (e) {
+			console.warn(`[llama-cpp] could not parse ${globalPath}: ${e}`);
+		}
+	}
+
+	if (existsSync(projectPath)) {
+		try {
+			config = { ...config, ...JSON.parse(readFileSync(projectPath, "utf-8")) };
+		} catch (e) {
+			console.warn(`[llama-cpp] could not parse ${projectPath}: ${e}`);
+		}
+	}
+
+	// Env vars override everything.
+	if (process.env.LLAMA_BASE_URL) config.baseUrl = process.env.LLAMA_BASE_URL;
+	if (process.env.LLAMA_API_KEY) config.apiKey = process.env.LLAMA_API_KEY;
+
+	return config;
+}
 
 const ModelsResponseSchema = Type.Object({
 	data: Type.Optional(
@@ -132,8 +176,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	const baseUrl = (process.env.LLAMA_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-	const apiKey = process.env.LLAMA_API_KEY ?? "no-key";
+	const config = loadConfig(process.cwd());
+	const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+	const apiKey = config.apiKey ?? "no-key";
 
 	async function refreshProvider(): Promise<void> {
 		try {

@@ -32,12 +32,31 @@ pi -e ~/code/pi-llama/index.ts
 `-e` loads the extension only for the current session, useful while
 developing.
 
-## Environment Variables
+## Configuration
 
-This extension supports the following environment variables:
+This extension supports configuration via JSON files and environment variables.
 
-- LLAMA_BASE_URL (Default: `http://localhost:8080/v1`)
-- LLAMA_API_KEY (Default: `no-key`)
+**Config file paths:**
+- Global: `~/.pi/agent/pi-llama.json`
+- Project: `<cwd>/.pi/pi-llama.json`
+
+**Precedence (highest to lowest):**
+1. Environment variables (`LLAMA_BASE_URL`, `LLAMA_API_KEY`)
+2. Project config (`<cwd>/.pi/pi-llama.json`)
+3. Global config (`~/.pi/agent/pi-llama.json`)
+4. Hardcoded defaults
+
+**Example config file:**
+```json
+{
+  "baseUrl": "http://server.local:8888/v1",
+  "apiKey": "your-api-key"
+}
+```
+
+**Environment variables:**
+- `LLAMA_BASE_URL` (Default: `http://localhost:8080/v1`)
+- `LLAMA_API_KEY` (Default: `no-key`)
 
 ## Usage
 
