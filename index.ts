@@ -130,6 +130,13 @@ function applyTemplateThinkingSupport(model: MutableModelMetadata): void {
 	};
 }
 
+// Pi invalidates a captured ctx when the session is replaced (e.g. new_session in
+// RPC mode). Any later ctx access then throws this error. Background work started
+// before the replacement should treat it as "session gone" and stop quietly.
+function isStaleContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes("stale after session replacement");
+}
+
 export default async function (pi: ExtensionAPI) {
 	let currentModels: LlamaModel[] = [];
 
@@ -365,9 +372,13 @@ export default async function (pi: ExtensionAPI) {
 				}
 			}
 		} catch (error) {
-			// Suppress errors from intentionally-aborted SSE connections.
+			// Suppress errors from intentionally-aborted SSE connections and from a
+			// stale ctx (session was replaced while streaming).
 			const msg = (error as Error).message;
-			if (signal.aborted && (error instanceof DOMException || msg === "terminated")) {
+			if (
+				isStaleContextError(error) ||
+				(signal.aborted && (error instanceof DOMException || msg === "terminated"))
+			) {
 				return;
 			}
 			ctx?.ui.notify(`[llama-cpp] SSE error: ${msg}`, "warning");
@@ -523,8 +534,9 @@ export default async function (pi: ExtensionAPI) {
 			});
 		} catch (error) {
 			const err = error as Error;
-			// Suppress notification for aborted requests (model was switched).
-			if (err.name !== "AbortError") {
+			// Suppress notification for aborted requests (model was switched) and for a
+			// stale ctx (session was replaced while awaiting) — both are expected.
+			if (err.name !== "AbortError" && !isStaleContextError(err)) {
 				ctx?.ui.notify(`[llama-cpp] /props for ${modelId} failed: ${err.message}`, "error");
 			}
 		} finally {
@@ -557,15 +569,25 @@ export default async function (pi: ExtensionAPI) {
 
 	// Discover /props for already-active models because re-selecting them does not emit model_select.
 	pi.on("before_provider_request", (event, ctx) => {
-		const modelId = (event.payload as { model?: unknown })?.model;
-		if (typeof modelId === "string") {
-			const activeModel =
-				ctx.model?.provider === PROVIDER_ID && ctx.model.id === modelId ? ctx.model : undefined;
-			void discoverModelMetadata(modelId, ctx, true, PROPS_TIMEOUT_MS, activeModel);
+		try {
+			const modelId = (event.payload as { model?: unknown })?.model;
+			if (typeof modelId === "string") {
+				const activeModel =
+					ctx.model?.provider === PROVIDER_ID && ctx.model.id === modelId ? ctx.model : undefined;
+				void discoverModelMetadata(modelId, ctx, true, PROPS_TIMEOUT_MS, activeModel);
+			}
+		} catch (error) {
+			// Session was replaced as the request fired; nothing to discover.
+			if (!isStaleContextError(error)) {
+				throw error;
+			}
 		}
 	});
 
 	pi.on("session_shutdown", () => {
 		clearFooterStatusTimeout();
+		// Stop in-flight /props and SSE so they don't resume against a stale ctx.
+		propsAbortController?.abort();
+		sseAbortController?.abort();
 	});
 }
