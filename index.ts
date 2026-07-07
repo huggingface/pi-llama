@@ -14,7 +14,7 @@ import { Loader, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const PROVIDER_ID = "llama-cpp";
 const DEFAULT_BASE_URL = "http://localhost:8080/v1";
-// Fallback for /v1/models entries missing meta.n_ctx.
+// Fallback for /v1/models entries missing meta.n_ctx and max_model_len.
 const DEFAULT_CONTEXT_WINDOW = 8192;
 // llama.cpp has no output-token cap (no endpoint reports one; generation is only
 // bounded by the context window), so use Pi's own default for models that omit
@@ -28,6 +28,9 @@ const ModelsResponseSchema = Type.Object({
 			Type.Object({
 				id: Type.String(),
 				aliases: Type.Optional(Type.Array(Type.String())),
+				// OpenAI-style field reported by some OpenAI-compatible servers (e.g.
+				// oMLX) that do not expose llama.cpp's meta.n_ctx.
+				max_model_len: Type.Optional(Type.Number()),
 				status: Type.Optional(
 					Type.Object({
 						value: Type.Optional(
@@ -143,7 +146,7 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerCommand("llama-version", {
 		description: "Get build info of llama.cpp server",
 		handler: async (_args, ctx) => {
-			const response = await fetch(`${baseUrl.replace(/\/v1$/, "")}/props`);
+			const response = await fetch(`${baseUrl.replace(/\/v1$/, "")}/props`, { headers: authHeaders });
 			if (!response.ok) {
 				ctx.ui.notify(`[llama-cpp] /props returned ${response.status}`, "error");
 				return;
@@ -170,10 +173,14 @@ export default async function (pi: ExtensionAPI) {
 
 	const baseUrl = (process.env.LLAMA_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
 	const apiKey = process.env.LLAMA_API_KEY ?? "no-key";
+	// Sent on discovery requests (/v1/models, /props, /models/sse). A no-auth
+	// llama.cpp server ignores this header, but servers that enforce an API key
+	// on every endpoint (e.g. oMLX) require it for model discovery to work.
+	const authHeaders = { Authorization: `Bearer ${apiKey}` };
 
 	async function refreshProvider(): Promise<void> {
 		try {
-			const response = await fetch(`${baseUrl}/models`);
+			const response = await fetch(`${baseUrl}/models`, { headers: authHeaders });
 			if (!response.ok) {
 				console.warn(`[llama-cpp] ${baseUrl}/models returned ${response.status}`);
 				return;
@@ -205,7 +212,10 @@ export default async function (pi: ExtensionAPI) {
 					suffixes.push("(loaded)");
 				}
 				const contextWindow =
-					model.meta?.n_ctx ?? previous?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+					model.meta?.n_ctx ??
+					model.max_model_len ??
+					previous?.contextWindow ??
+					DEFAULT_CONTEXT_WINDOW;
 				const displayName = model.aliases?.[0] || model.id;
 				return {
 					id: model.id,
@@ -231,6 +241,7 @@ export default async function (pi: ExtensionAPI) {
 			// Track which model is currently loaded on the server
 			const loadedModel = currentModels.find((m) => m.status?.value === "loaded");
 			currentlyLoadedModel = loadedModel?.id ?? null;
+			serverSupportsStatus = currentModels.some((m) => m.status);
 
 			pi.registerProvider(PROVIDER_ID, {
 				name: "llama.cpp",
@@ -247,6 +258,10 @@ export default async function (pi: ExtensionAPI) {
 	const discoveredMetadata = new Set<string>();
 	const pendingMetadata = new Set<string>();
 	let currentlyLoadedModel: string | null = null;
+	// llama.cpp reports a status per model in /v1/models; OpenAI-compatible servers
+	// (e.g. oMLX) do not. When absent, models load on demand, so we skip the
+	// /props autoload + loading-widget flow and treat models as always loaded.
+	let serverSupportsStatus = false;
 	let statusTimeout: ReturnType<typeof setTimeout> | undefined;
 	let sseAbortController: AbortController | null = null;
 	let propsAbortController: AbortController | null = null;
@@ -274,7 +289,7 @@ export default async function (pi: ExtensionAPI) {
 		const signal = sseAbortController.signal;
 
 		try {
-			const response = await fetch(`${baseUrl.replace(/\/v1$/, "")}/models/sse`, { signal });
+			const response = await fetch(`${baseUrl.replace(/\/v1$/, "")}/models/sse`, { signal, headers: authHeaders });
 
 			if (!response.ok) {
 				if (response.status !== 404) {
@@ -399,8 +414,10 @@ export default async function (pi: ExtensionAPI) {
 			return;
 		}
 		const displayName = model.name.split(" ")[0];
-		// Use tracked state instead of stale currentModels status.
-		const isLoaded = currentlyLoadedModel === modelId;
+		// Use tracked state instead of stale currentModels status. Servers that
+		// don't report model status load on demand, so treat them as always loaded
+		// to skip the /props autoload + loading-widget flow.
+		const isLoaded = !serverSupportsStatus || currentlyLoadedModel === modelId;
 
 		if (discoveredMetadata.has(modelId)) {
 			// If discovered but no longer loaded, clear cache and fall through to reload.
@@ -467,11 +484,22 @@ export default async function (pi: ExtensionAPI) {
 				void connectToLoadingProgress(modelId, ctx, loader);
 			}
 
-			const response = await fetch(propsUrl, { signal: propsAbortController.signal });
+			const response = await fetch(propsUrl, { signal: propsAbortController.signal, headers: authHeaders });
 			if (!response.ok) {
 				// 500 during autoload is expected when the server cancels a load to start
-				// another model. Suppress the notification for that case.
-				if (!(shouldAutoload && response.status === 500)) {
+				// another model. 404 means the server does not implement /props at all
+				// (e.g. oMLX and other OpenAI-compatible servers); the context window
+				// already comes from /v1/models (meta.n_ctx or max_model_len) and
+				// thinking-template detection simply won't be refined via /props.
+				// In both cases suppress the error, clear any loading widget, and
+				// remember not to retry /props for this model.
+				if (response.status === 404) {
+					discoveredMetadata.add(modelId);
+					if (shouldAutoload && ctx) {
+						clearFooterStatusTimeout();
+						ctx.ui.setWidget(PROVIDER_ID, undefined);
+					}
+				} else if (!(shouldAutoload && response.status === 500)) {
 					ctx?.ui.notify(`[llama-cpp] /props for ${modelId} returned ${response.status}`, "error");
 				}
 				return;
