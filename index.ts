@@ -568,13 +568,10 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	// Discover /props for already-active models because re-selecting them does not emit model_select.
-	pi.on("before_provider_request", (event, ctx) => {
+	pi.on("before_agent_start", async (_event, ctx) => {
 		try {
-			const modelId = (event.payload as { model?: unknown })?.model;
-			if (typeof modelId === "string") {
-				const activeModel =
-					ctx.model?.provider === PROVIDER_ID && ctx.model.id === modelId ? ctx.model : undefined;
-				void discoverModelMetadata(modelId, ctx, true, PROPS_TIMEOUT_MS, activeModel);
+			if (ctx.model?.provider === PROVIDER_ID) {
+				await discoverModelMetadata(ctx.model.id, ctx, true, PROPS_TIMEOUT_MS, ctx.model);
 			}
 		} catch (error) {
 			// Session was replaced as the request fired; nothing to discover.
