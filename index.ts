@@ -23,6 +23,15 @@ const DEFAULT_MAX_TOKENS = 16384;
 const PROPS_TIMEOUT_MS = 120_000;
 
 const ModelsResponseSchema = Type.Object({
+	models: Type.Optional(
+		Type.Array(
+			Type.Object({
+				name: Type.Optional(Type.String()),
+				model: Type.Optional(Type.String()),
+				capabilities: Type.Optional(Type.Array(Type.String())),
+			}),
+		),
+	),
 	data: Type.Optional(
 		Type.Array(
 			Type.Object({
@@ -190,10 +199,26 @@ export default async function (pi: ExtensionAPI) {
 
 			const previousById = new Map(currentModels.map((m) => [m.id, m]));
 
+			const capabilitiesById = new Map<string, string[]>();
+
+			for (const listedModel of payload.models ?? []) {
+				const capabilities = listedModel.capabilities ?? [];
+
+				if (listedModel.model) {
+					capabilitiesById.set(listedModel.model, capabilities);
+				}
+				if (listedModel.name) {
+					capabilitiesById.set(listedModel.name, capabilities);
+				}
+			}
+
 			currentModels = (payload.data ?? []).map((model) => {
 				const previous = previousById.get(model.id);
 				const isLoaded = model.status?.value === "loaded";
-				const modalities = model.architecture?.input_modalities ?? ["text"];
+				const modalities =
+					model.architecture?.input_modalities ??
+					(capabilitiesById.get(model.id)?.includes("multimodal") ? ["text", "image"] : ["text"]);
+
 				const input = modalities.filter(
 					(m): m is "text" | "image" => m === "text" || m === "image",
 				);
