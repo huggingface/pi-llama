@@ -137,6 +137,24 @@ function isStaleContextError(error: unknown): boolean {
 	return error instanceof Error && error.message.includes("stale after session replacement");
 }
 
+// A captured ctx throws on any ui access once the session is replaced. Background
+// work (SSE stream, /props) outlives the session, so route its notifications
+// through here: a stale error means "session gone" and is swallowed, anything
+// else still warns. A raw ctx.ui.notify in a catch block would crash pi.
+function notify(
+	ctx: ExtensionCtx | undefined,
+	message: string,
+	type?: "info" | "warning" | "error",
+): void {
+	try {
+		ctx?.ui.notify(message, type);
+	} catch (error) {
+		if (!isStaleContextError(error)) {
+			console.warn(message);
+		}
+	}
+}
+
 export default async function (pi: ExtensionAPI) {
 	let currentModels: LlamaModel[] = [];
 
@@ -381,7 +399,7 @@ export default async function (pi: ExtensionAPI) {
 			) {
 				return;
 			}
-			ctx?.ui.notify(`[llama-cpp] SSE error: ${msg}`, "warning");
+			notify(ctx, `[llama-cpp] SSE error: ${msg}`, "warning");
 		} finally {
 			sseAbortController = null;
 		}
@@ -537,7 +555,7 @@ export default async function (pi: ExtensionAPI) {
 			// Suppress notification for aborted requests (model was switched) and for a
 			// stale ctx (session was replaced while awaiting) — both are expected.
 			if (err.name !== "AbortError" && !isStaleContextError(err)) {
-				ctx?.ui.notify(`[llama-cpp] /props for ${modelId} failed: ${err.message}`, "error");
+				notify(ctx, `[llama-cpp] /props for ${modelId} failed: ${err.message}`, "error");
 			}
 		} finally {
 			clearTimeout(timer);
