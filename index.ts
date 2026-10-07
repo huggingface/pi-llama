@@ -195,6 +195,18 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
+	// Non-interactive hosts (RPC mode, custom UIs) have no /model input to
+	// hook, so they can't trigger a re-query on their own. This command is
+	// the explicit equivalent; the notify tells such hosts the catalog has
+	// been re-queried so they can re-request it.
+	pi.registerCommand("llama-refresh", {
+		description: "Re-query the llama.cpp server and refresh the model catalog",
+		handler: async (_args, ctx) => {
+			await refreshProvider();
+			ctx.ui.notify(`llama.cpp catalog re-queried — ${currentModels.length} model(s) available`);
+		},
+	});
+
 	const baseUrl = (process.env.LLAMA_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
 	const apiKey = process.env.LLAMA_API_KEY ?? "no-key";
 
@@ -442,6 +454,15 @@ export default async function (pi: ExtensionAPI) {
 			return;
 		}
 		const displayName = model.name.split(" ")[0];
+		// Re-query /v1/models so the loaded status is fresh: a model can be unloaded by an
+		// external process (or another tab) between selections, and the module-level
+		// currentlyLoadedModel only updates on a refresh or an SSE event we may never
+		// receive for a model we never loaded ourselves. Trusting the stale flag would
+		// send /props with autoload=false against an unloaded model (400 "model is not
+		// loaded"), fail to load the user's selection, and let the openai-completions
+		// request error out — which pi's availability refresh can attribute to the whole
+		// llama-cpp provider and drop it from the catalog.
+		await refreshProvider();
 		// Use tracked state instead of stale currentModels status.
 		const isLoaded = currentlyLoadedModel === modelId;
 
@@ -476,7 +497,7 @@ export default async function (pi: ExtensionAPI) {
 		}
 		propsAbortController = new AbortController();
 		const timer = setTimeout(() => propsAbortController.abort(), timeoutMs);
-		const shouldAutoload = autoload && !isLoaded;
+		let shouldAutoload = autoload && !isLoaded;
 		const propsUrl = `${baseUrl.replace(/\/v1$/, "")}/props?model=${encodeURIComponent(modelId)}&autoload=${shouldAutoload}`;
 		const clearFooterStatusLater = () => {
 			clearFooterStatusTimeout();
@@ -510,14 +531,25 @@ export default async function (pi: ExtensionAPI) {
 				void connectToLoadingProgress(modelId, ctx, loader);
 			}
 
-			const response = await fetch(propsUrl, { signal: propsAbortController.signal });
+			let response = await fetch(propsUrl, { signal: propsAbortController.signal });
 			if (!response.ok) {
-				// 500 during autoload is expected when the server cancels a load to start
-				// another model. Suppress the notification for that case.
-				if (!(shouldAutoload && response.status === 500)) {
-					ctx?.ui.notify(`[llama-cpp] /props for ${modelId} returned ${response.status}`, "error");
+				// 400 "model is not loaded" with autoload=false means the model was unloaded
+				// after our (now-refreshed) status check raced, or the refresh itself raced.
+				// The user just selected it, so loading it is the intent — retry with autoload
+				// instead of surfacing a load error and leaving the model unusable.
+				if (!shouldAutoload && response.status === 400 && autoload) {
+					shouldAutoload = true;
+					const retryUrl = `${baseUrl.replace(/\/v1$/, "")}/props?model=${encodeURIComponent(modelId)}&autoload=true`;
+					response = await fetch(retryUrl, { signal: propsAbortController.signal });
 				}
-				return;
+				if (!response.ok) {
+					// 500 during autoload is expected when the server cancels a load to start
+					// another model. Suppress the notification for that case.
+					if (!(shouldAutoload && response.status === 500)) {
+						ctx?.ui.notify(`[llama-cpp] /props for ${modelId} returned ${response.status}`, "error");
+					}
+					return;
+				}
 			}
 			const data: unknown = await response.json();
 			if (!validatePropsResponse.Check(data)) {
