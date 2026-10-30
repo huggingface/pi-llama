@@ -36,7 +36,7 @@ developing.
 
 This extension supports the following environment variables:
 
-- LLAMA_BASE_URL (Default: `http://localhost:8080/v1`)
+- LLAMA_BASE_URL (Default: `http://localhost:9931/v1`)
 - LLAMA_API_KEY (Default: `no-key`)
 
 ## Usage
