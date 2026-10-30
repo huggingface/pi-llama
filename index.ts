@@ -13,7 +13,7 @@ import { Compile } from "typebox/compile";
 import { Loader, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const PROVIDER_ID = "llama-cpp";
-const DEFAULT_BASE_URL = "http://localhost:8080/v1";
+const DEFAULT_BASE_URL = "http://localhost:9931/v1";
 // Fallback for /v1/models entries missing meta.n_ctx.
 const DEFAULT_CONTEXT_WINDOW = 8192;
 // llama.cpp has no output-token cap (no endpoint reports one; generation is only
