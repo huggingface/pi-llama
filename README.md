@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > **llama.cpp support is now built into [Pi](https://pi.dev).**
-> This extension is no longer needed. Follow the [built-in llama.cpp setup guide](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/llama-cpp.md) to get started.
+> This extension is no longer needed. Follow the [built-in llama.cpp setup guide](https://pi.dev/docs/latest/llama-cpp) to get started.
 
 llama.cpp Pi extension. Auto-discovers models from a running llama.cpp server and
 registers them as the `llama-cpp` provider in [pi](https://pi.dev).
