@@ -1,6 +1,6 @@
 # pi-llama
 
-> [!NOTE]
+> [!TIP]
 > **llama.cpp support is now built into [Pi](https://pi.dev).**
 > This extension is no longer needed. Follow the [built-in llama.cpp setup guide](https://pi.dev/docs/latest/llama-cpp) to get started.
 
